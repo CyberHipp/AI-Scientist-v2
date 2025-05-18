@@ -5,6 +5,7 @@ from collections import defaultdict
 import asyncio
 from datetime import datetime
 import logging
+import inspect
 
 
 class TokenTracker:
@@ -141,17 +142,31 @@ token_tracker = TokenTracker()
 
 
 def track_token_usage(func):
+    """Decorator to track token usage for OpenAI/Anthropic calls.
+
+    The original implementation only looked at keyword arguments to obtain the
+    ``prompt`` and ``system_message`` values. Many call sites pass these
+    arguments positionally which resulted in ``prompt`` being ``None`` and the
+    interaction information not being recorded correctly. The decorator now uses
+    ``inspect`` to bind the arguments so that both positional and keyword
+    arguments are handled transparently.
+    """
+
+    sig = inspect.signature(func)
+
     @wraps(func)
     async def async_wrapper(*args, **kwargs):
-        prompt = kwargs.get("prompt")
-        system_message = kwargs.get("system_message")
+        bound = sig.bind_partial(*args, **kwargs)
+        prompt = bound.arguments.get("prompt")
+        system_message = bound.arguments.get("system_message")
+
         if not prompt and not system_message:
             raise ValueError(
                 "Either 'prompt' or 'system_message' must be provided for token tracking"
             )
 
-        logging.info("args: ", args)
-        logging.info("kwargs: ", kwargs)
+        logging.info("args: %s", args)
+        logging.info("kwargs: %s", kwargs)
 
         result = await func(*args, **kwargs)
         model = result.model
@@ -174,26 +189,28 @@ def track_token_usage(func):
                 model,
                 system_message,
                 prompt,
-                result.choices[
-                    0
-                ].message.content,  # Assumes response is in content field
+                result.choices[0].message.content,  # Assumes response is in content field
                 timestamp,
             )
         return result
 
     @wraps(func)
     def sync_wrapper(*args, **kwargs):
-        prompt = kwargs.get("prompt")
-        system_message = kwargs.get("system_message")
+        bound = sig.bind_partial(*args, **kwargs)
+        prompt = bound.arguments.get("prompt")
+        system_message = bound.arguments.get("system_message")
+
         if not prompt and not system_message:
             raise ValueError(
                 "Either 'prompt' or 'system_message' must be provided for token tracking"
             )
+
+        logging.info("args: %s", args)
+        logging.info("kwargs: %s", kwargs)
+
         result = func(*args, **kwargs)
         model = result.model
         timestamp = result.created
-        logging.info("args: ", args)
-        logging.info("kwargs: ", kwargs)
 
         if hasattr(result, "usage"):
             token_tracker.add_tokens(
@@ -212,9 +229,7 @@ def track_token_usage(func):
                 model,
                 system_message,
                 prompt,
-                result.choices[
-                    0
-                ].message.content,  # Assumes response is in content field
+                result.choices[0].message.content,  # Assumes response is in content field
                 timestamp,
             )
         return result
